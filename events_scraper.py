@@ -1,6 +1,7 @@
 from flask import Flask
 from playwright.sync_api import sync_playwright
 import re
+import os
 from datetime import datetime
 from dateutil import parser as date_parser
 
@@ -8,13 +9,14 @@ import requests
 import firebase_admin
 from firebase_admin import credentials, firestore
 
+
 cred = credentials.Certificate("firebase_key.json")
 firebase_admin.initialize_app(cred)
 
 db = firestore.client()
 app = Flask(__name__)
 
-GOOGLE_MAPS_API_KEY = "AIzaSyB7d4DNoomrA7wwouJUV8xNBl2C012hem4"
+GOOGLE_MAPS_API_KEY = os.environ.get("GOOGLE_MAPS_API_KEY", "")
 MAIN_EVENTS_URL = "https://www.tel-aviv.gov.il/Visitors/Events/Pages/Events.aspx"
 
 def get_latest_event_urls(page, limit=40):
