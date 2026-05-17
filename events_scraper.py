@@ -225,6 +225,125 @@ def get_text_by_title(page, title_text):
         return ""
 
 
+def normalize_url(url):
+    if not url:
+        return ""
+
+    url = url.strip()
+
+    if url.startswith("//"):
+        return "https:" + url
+
+    if url.startswith("/"):
+        return "https://www.tel-aviv.gov.il" + url
+
+    return url
+
+
+def first_from_srcset(srcset):
+    if not srcset:
+        return ""
+
+    return srcset.split(",")[0].strip().split(" ")[0]
+
+
+def get_image_src(img):
+    return (
+        img.get_attribute("src")
+        or img.get_attribute("data-src")
+        or img.get_attribute("data-original")
+        or img.get_attribute("data-lazy-src")
+        or first_from_srcset(img.get_attribute("srcset"))
+        or ""
+    )
+
+
+def is_bad_image_url(url):
+    if not url:
+        return True
+
+    lower_url = url.lower()
+
+    bad_words = [
+        "logo",
+        "icon",
+        "sprite",
+        "facebook",
+        "youtube",
+        "instagram",
+        "whatsapp",
+        "accessibility"
+    ]
+
+    return any(word in lower_url for word in bad_words)
+
+
+def get_event_image_url(page):
+    # First attempt: take a large visible image from the upper area of the page
+    images = page.locator("img")
+
+    best_image_url = ""
+    best_score = 0
+
+    for i in range(images.count()):
+        img = images.nth(i)
+
+        try:
+            box = img.bounding_box()
+        except Exception:
+            box = None
+
+        if not box:
+            continue
+
+        width = box.get("width", 0)
+        height = box.get("height", 0)
+        y = box.get("y", 99999)
+
+        # Prefer large images near the top of the event page
+        if width < 250 or height < 120:
+            continue
+
+        if y > 900:
+            continue
+
+        image_url = normalize_url(get_image_src(img))
+
+        if not image_url:
+            continue
+
+        if is_bad_image_url(image_url):
+            continue
+
+        score = (width * height) - (y * 10)
+
+        if score > best_score:
+            best_score = score
+            best_image_url = image_url
+
+    if best_image_url:
+        return best_image_url
+
+    # Second attempt: official share image
+    if page.locator('meta[property="og:image"]').count() > 0:
+        image_url = normalize_url(
+            page.locator('meta[property="og:image"]').first.get_attribute("content") or ""
+        )
+
+        if image_url and not is_bad_image_url(image_url):
+            return image_url
+
+    # Third attempt: Tel Aviv image path
+    img = page.locator("div img[src*='digitelimages']").first
+    if img.count() > 0:
+        image_url = normalize_url(get_image_src(img))
+
+        if image_url and not is_bad_image_url(image_url):
+            return image_url
+
+    return ""
+
+
 def open_event_page(page, url):
     for attempt in range(3):
         try:
@@ -270,18 +389,7 @@ def scrape_event_detail(page, url):
     description = get_text_by_title(page, "תיאור")
     description = shorten_description(description)
 
-    image_url = ""
-
-    if page.locator('meta[property="og:image"]').count() > 0:
-        image_url = page.locator('meta[property="og:image"]').first.get_attribute("content") or ""
-
-    if not image_url:
-        img = page.locator("div img[src*='digitelimages']").first
-        if img.count() > 0:
-            image_url = img.get_attribute("src") or ""
-
-    if image_url.startswith("/"):
-        image_url = "https://www.tel-aviv.gov.il" + image_url
+    image_url = get_event_image_url(page)
 
     external_id = extract_item_id(url)
     date_time_millis, end_time_millis = parse_event_times(when_text)
