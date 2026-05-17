@@ -3,6 +3,7 @@ from playwright.sync_api import sync_playwright
 import re
 import os
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from dateutil import parser as date_parser
 
 import requests
@@ -18,6 +19,11 @@ app = Flask(__name__)
 
 GOOGLE_MAPS_API_KEY = os.environ.get("GOOGLE_MAPS_API_KEY", "")
 MAIN_EVENTS_URL = "https://www.tel-aviv.gov.il/Visitors/Events/Pages/Events.aspx"
+ISRAEL_TZ = ZoneInfo("Asia/Jerusalem")
+
+
+def get_current_time_millis():
+    return int(datetime.now(ISRAEL_TZ).timestamp() * 1000)
 
 
 def get_latest_event_urls(page, limit=40):
@@ -71,11 +77,11 @@ def get_latest_event_urls(page, limit=40):
 
     return urls
 
+
 def geocode_address(address):
     if not address:
         return 0.0, 0.0
 
-    # Phrases that indicate invalid or non-specific addresses
     invalid_phrases = [
         "כמפורט בכתבה",
         "ברחבי העיר"
@@ -86,7 +92,6 @@ def geocode_address(address):
             return 0.0, 0.0
 
     query = f"{address}, ישראל"
-
     url = "https://maps.googleapis.com/maps/api/geocode/json"
 
     params = {
@@ -113,7 +118,6 @@ def geocode_address(address):
 
 
 def extract_item_id(url):
-    # Extract event ID from URL
     match = re.search(r"ItemID=(\d+)", url, re.IGNORECASE)
     if not match:
         match = re.search(r"ItemId=(\d+)", url, re.IGNORECASE)
@@ -122,7 +126,6 @@ def extract_item_id(url):
 
 
 def parse_event_times(when_text):
-    # Parse date and time range from "when" text
     text = clean(when_text).replace("מתי?", "").strip()
 
     dates = re.findall(r"\d{1,2}\.\d{1,2}\.\d{2,4}", text)
@@ -131,21 +134,53 @@ def parse_event_times(when_text):
     if not dates:
         return 0, 0
 
-    start_date = dates[0]
-    end_date = dates[1] if len(dates) > 1 else dates[0]
-
     start_time = times[0] if len(times) > 0 else "00:00"
     end_time = times[1] if len(times) > 1 else "23:59"
 
+    today = datetime.now(ISRAEL_TZ).date()
+
+    upcoming_dates = []
+
+    if "המועדים הקרובים" in text:
+        upcoming_part = text.split("המועדים הקרובים", 1)[1]
+        upcoming_dates = re.findall(r"\d{1,2}\.\d{1,2}\.\d{2,4}", upcoming_part)
+
+    candidate_dates = upcoming_dates if upcoming_dates else dates
+
+    def parse_date_only(date_str):
+        dt = date_parser.parse(date_str, dayfirst=True)
+        dt = dt.replace(tzinfo=ISRAEL_TZ)
+        return dt.date()
+
+    future_dates = []
+
+    for date_str in candidate_dates:
+        try:
+            parsed_date = parse_date_only(date_str)
+            if parsed_date >= today:
+                future_dates.append(date_str)
+        except Exception as e:
+            print("Failed to parse candidate date:", date_str, e)
+
+    if future_dates:
+        start_date = future_dates[0]
+    else:
+        start_date = candidate_dates[0]
+
+    end_date = start_date
+
     def to_millis(date_str, time_str):
         dt = date_parser.parse(f"{date_str} {time_str}", dayfirst=True)
+
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=ISRAEL_TZ)
+
         return int(dt.timestamp() * 1000)
 
     return to_millis(start_date, start_time), to_millis(end_date, end_time)
 
 
 def clean_address(where_text):
-    # Clean address text from unwanted UI strings
     address = clean(where_text)
     address = address.replace("איפה?", "").strip()
     address = address.replace("להצגת מיקום על גבי מפה >>", "").strip()
@@ -153,14 +188,12 @@ def clean_address(where_text):
 
 
 def clean(text):
-    # Normalize whitespace in text
     if not text:
         return ""
     return " ".join(text.split()).strip()
 
 
 def shorten_description(description, max_chars=700):
-    # Limit description length while preserving readability
     description = clean(description)
 
     if len(description) <= max_chars:
@@ -170,7 +203,6 @@ def shorten_description(description, max_chars=700):
 
 
 def get_block_by_heading(page, heading):
-    # Extract text block based on section heading
     locator = page.locator(f'h3:has-text("{heading}")').first
 
     if locator.count() == 0:
@@ -181,7 +213,6 @@ def get_block_by_heading(page, heading):
 
 
 def get_text_by_title(page, title_text):
-    # Extract text based on label/title in the page
     title = page.locator(f'text="{title_text}"').first
 
     if title.count() == 0:
@@ -190,30 +221,47 @@ def get_text_by_title(page, title_text):
     try:
         parent = title.locator("xpath=..")
         return clean(parent.inner_text()).replace(title_text, "").strip()
-    except:
+    except Exception:
         return ""
 
 
+def open_event_page(page, url):
+    for attempt in range(3):
+        try:
+            print(f"Opening event page, attempt {attempt + 1}/3:", url)
+
+            page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            page.wait_for_timeout(5000)
+
+            return True
+
+        except Exception as e:
+            print(f"Failed to open event page on attempt {attempt + 1}:", url, e)
+
+            if attempt < 2:
+                print("Waiting 10 seconds before retry...")
+                page.wait_for_timeout(10000)
+
+    return False
+
+
 def scrape_event_detail(page, url):
-    # Navigate to event page and extract all relevant fields
-    page.goto(url, wait_until="domcontentloaded", timeout=60000)
-    page.wait_for_timeout(5000)
+    page_loaded = open_event_page(page, url)
+
+    if not page_loaded:
+        raise Exception(f"Could not open event page after retries: {url}")
 
     title = ""
 
-    # First attempt: og:title (usually contains full event name)
     if page.locator('meta[property="og:title"]').count() > 0:
         title = clean(page.locator('meta[property="og:title"]').first.get_attribute("content") or "")
 
-    # Second attempt: page <title>
     if not title and page.locator("title").count() > 0:
         title = clean(page.locator("title").first.inner_text())
 
-    # Last fallback: <h1>
     if not title and page.locator("h1").count() > 0:
         title = clean(page.locator("h1").first.inner_text())
 
-    # Remove anything after "|" (site branding, extra text, etc.)
     if "|" in title:
         title = title.split("|")[0].strip()
 
@@ -224,17 +272,14 @@ def scrape_event_detail(page, url):
 
     image_url = ""
 
-    # First attempt: og:image
     if page.locator('meta[property="og:image"]').count() > 0:
         image_url = page.locator('meta[property="og:image"]').first.get_attribute("content") or ""
 
-    # Second attempt: image inside page content
     if not image_url:
         img = page.locator("div img[src*='digitelimages']").first
         if img.count() > 0:
             image_url = img.get_attribute("src") or ""
 
-    # Convert to absolute URL if needed
     if image_url.startswith("/"):
         image_url = "https://www.tel-aviv.gov.il" + image_url
 
@@ -242,9 +287,8 @@ def scrape_event_detail(page, url):
     date_time_millis, end_time_millis = parse_event_times(when_text)
     address = clean_address(where_text)
     lat, lng = geocode_address(address)
-    current_time = int(datetime.now().timestamp() * 1000)
+    current_time = get_current_time_millis()
 
-    # Determine if event is still active
     is_active = not (end_time_millis > 0 and end_time_millis < current_time)
 
     event = {
@@ -271,12 +315,13 @@ def scrape_event_detail(page, url):
 
     return event
 
+
 def save_event_if_needed(event):
     doc_ref = db.collection("events").document(event["id"])
     doc = doc_ref.get()
 
     if not doc.exists:
-        event["createdAt"] = int(datetime.now().timestamp() * 1000)
+        event["createdAt"] = get_current_time_millis()
         doc_ref.set(event, merge=True)
         print("Added:", event["name"])
         return "added"
@@ -297,6 +342,7 @@ def save_event_if_needed(event):
     print("No changes:", event["name"])
     return "no_changes"
 
+
 def add_new_events_until_existing(page, urls):
     for url in urls:
         event = scrape_valid_event(page, url)
@@ -315,7 +361,7 @@ def add_new_events_until_existing(page, urls):
 
 
 def deactivate_expired_firestore_events():
-    current_time = int(datetime.now().timestamp() * 1000)
+    current_time = get_current_time_millis()
 
     docs = db.collection("events") \
         .where("isActive", "==", True) \
@@ -392,6 +438,13 @@ def main():
         browser.close()
 
         print("Scraper finished successfully")
+
+
+@app.route("/", methods=["GET"])
+def run_scraper():
+    main()
+    return "EventSpot scraper finished successfully", 200
+
 
 if __name__ == "__main__":
     main()
