@@ -119,6 +119,7 @@ def geocode_address(address):
 
 def extract_item_id(url):
     match = re.search(r"ItemID=(\d+)", url, re.IGNORECASE)
+
     if not match:
         match = re.search(r"ItemId=(\d+)", url, re.IGNORECASE)
 
@@ -128,46 +129,35 @@ def extract_item_id(url):
 def parse_event_times(when_text):
     text = clean(when_text).replace("מתי?", "").strip()
 
-    dates = re.findall(r"\d{1,2}\.\d{1,2}\.\d{2,4}", text)
-    times = re.findall(r"\d{1,2}:\d{2}", text)
+    if not text:
+        return 0, 0
+
+    # If the page has "המועדים הקרובים", we only use the part before it
+    # for the main date range. This prevents nearby dates from breaking the range.
+    main_time_part = text
+
+    if "המועדים הקרובים" in text:
+        main_time_part = text.split("המועדים הקרובים", 1)[0].strip()
+
+    dates = re.findall(r"\d{1,2}\.\d{1,2}\.\d{2,4}", main_time_part)
+    times = re.findall(r"\d{1,2}:\d{2}", main_time_part)
+
+    # Fallback: if no dates were found before "המועדים הקרובים",
+    # search in the full text.
+    if not dates:
+        dates = re.findall(r"\d{1,2}\.\d{1,2}\.\d{2,4}", text)
+
+    if not times:
+        times = re.findall(r"\d{1,2}:\d{2}", text)
 
     if not dates:
         return 0, 0
 
+    start_date = dates[0]
+    end_date = dates[1] if len(dates) > 1 else dates[0]
+
     start_time = times[0] if len(times) > 0 else "00:00"
     end_time = times[1] if len(times) > 1 else "23:59"
-
-    today = datetime.now(ISRAEL_TZ).date()
-
-    upcoming_dates = []
-
-    if "המועדים הקרובים" in text:
-        upcoming_part = text.split("המועדים הקרובים", 1)[1]
-        upcoming_dates = re.findall(r"\d{1,2}\.\d{1,2}\.\d{2,4}", upcoming_part)
-
-    candidate_dates = upcoming_dates if upcoming_dates else dates
-
-    def parse_date_only(date_str):
-        dt = date_parser.parse(date_str, dayfirst=True)
-        dt = dt.replace(tzinfo=ISRAEL_TZ)
-        return dt.date()
-
-    future_dates = []
-
-    for date_str in candidate_dates:
-        try:
-            parsed_date = parse_date_only(date_str)
-            if parsed_date >= today:
-                future_dates.append(date_str)
-        except Exception as e:
-            print("Failed to parse candidate date:", date_str, e)
-
-    if future_dates:
-        start_date = future_dates[0]
-    else:
-        start_date = candidate_dates[0]
-
-    end_date = start_date
 
     def to_millis(date_str, time_str):
         dt = date_parser.parse(f"{date_str} {time_str}", dayfirst=True)
@@ -190,6 +180,7 @@ def clean_address(where_text):
 def clean(text):
     if not text:
         return ""
+
     return " ".join(text.split()).strip()
 
 
@@ -279,7 +270,6 @@ def is_bad_image_url(url):
 
 
 def get_event_image_url(page):
-    # First attempt: take a large visible image from the upper area of the page
     images = page.locator("img")
 
     best_image_url = ""
@@ -324,7 +314,7 @@ def get_event_image_url(page):
     if best_image_url:
         return best_image_url
 
-    # Second attempt: official share image
+    # Fallback: official share image
     if page.locator('meta[property="og:image"]').count() > 0:
         image_url = normalize_url(
             page.locator('meta[property="og:image"]').first.get_attribute("content") or ""
@@ -333,8 +323,9 @@ def get_event_image_url(page):
         if image_url and not is_bad_image_url(image_url):
             return image_url
 
-    # Third attempt: Tel Aviv image path
+    # Fallback: Tel Aviv image path
     img = page.locator("div img[src*='digitelimages']").first
+
     if img.count() > 0:
         image_url = normalize_url(get_image_src(img))
 
@@ -386,6 +377,7 @@ def scrape_event_detail(page, url):
 
     when_text = get_block_by_heading(page, "מתי")
     where_text = get_block_by_heading(page, "איפה")
+
     description = get_text_by_title(page, "תיאור")
     description = shorten_description(description)
 
@@ -393,8 +385,10 @@ def scrape_event_detail(page, url):
 
     external_id = extract_item_id(url)
     date_time_millis, end_time_millis = parse_event_times(when_text)
+
     address = clean_address(where_text)
     lat, lng = geocode_address(address)
+
     current_time = get_current_time_millis()
 
     is_active = not (end_time_millis > 0 and end_time_millis < current_time)
