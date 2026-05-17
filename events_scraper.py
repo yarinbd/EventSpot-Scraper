@@ -19,9 +19,30 @@ app = Flask(__name__)
 GOOGLE_MAPS_API_KEY = os.environ.get("GOOGLE_MAPS_API_KEY", "")
 MAIN_EVENTS_URL = "https://www.tel-aviv.gov.il/Visitors/Events/Pages/Events.aspx"
 
+
 def get_latest_event_urls(page, limit=40):
-    page.goto(MAIN_EVENTS_URL, wait_until="domcontentloaded", timeout=60000)
-    page.wait_for_timeout(7000)
+    page_loaded = False
+
+    for attempt in range(3):
+        try:
+            print(f"Opening main events page, attempt {attempt + 1}/3")
+
+            page.goto(MAIN_EVENTS_URL, wait_until="domcontentloaded", timeout=60000)
+            page.wait_for_timeout(7000)
+
+            page_loaded = True
+            break
+
+        except Exception as e:
+            print(f"Failed to open main events page on attempt {attempt + 1}:", e)
+
+            if attempt < 2:
+                print("Waiting 10 seconds before retry...")
+                page.wait_for_timeout(10000)
+
+    if not page_loaded:
+        print("Could not open main events page after 3 attempts")
+        return []
 
     links = page.locator("a[href*='MainItemPage.aspx'][href*='ItemID=']")
 
@@ -347,6 +368,7 @@ def scrape_valid_event(page, url):
 
     return event
 
+
 def main():
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
@@ -357,18 +379,19 @@ def main():
         print(f"Found {len(latest_urls)} candidate urls")
 
         deactivate_expired_firestore_events()
+
+        if not latest_urls:
+            print("No candidate urls found. Skipping website-dependent updates.")
+            browser.close()
+            print("Scraper finished without website data")
+            return
+
         update_existing_tlv_events(page)
         add_new_events_until_existing(page, latest_urls)
 
         browser.close()
 
         print("Scraper finished successfully")
-
-@app.route("/", methods=["GET"])
-def run_scraper():
-    main()
-    return "EventSpot scraper finished successfully", 200
-
 
 if __name__ == "__main__":
     main()
