@@ -2,8 +2,7 @@ name: Scrape Tel Aviv Events
 
 on:
   schedule:
-    - cron: "0 5 * * *"
-      timezone: "Asia/Jerusalem"
+    - cron: "0 2 * * *"
 
   workflow_dispatch:
 
