@@ -5,11 +5,12 @@ import os
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from dateutil import parser as date_parser
+import json
+from groq import Groq
 
 import requests
 import firebase_admin
 from firebase_admin import credentials, firestore
-
 
 cred = credentials.Certificate("firebase_key.json")
 firebase_admin.initialize_app(cred)
@@ -21,6 +22,16 @@ GOOGLE_MAPS_API_KEY = os.environ.get("GOOGLE_MAPS_API_KEY", "")
 MAIN_EVENTS_URL = "https://www.tel-aviv.gov.il/Visitors/Events/Pages/Events.aspx"
 ISRAEL_TZ = ZoneInfo("Asia/Jerusalem")
 
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
+
+ALLOWED_CATEGORIES = [
+    "Music", "Party", "Nightlife", "Festival",
+    "Food", "Drinks", "Art", "Exhibition",
+    "Culture", "Cinema", "Theater", "Stand-up",
+    "Workshop", "Networking", "Technology", "Business",
+    "Sports", "Fitness", "Outdoor", "Family",
+    "Municipality"
+]
 
 def get_current_time_millis():
     return int(datetime.now(ISRAEL_TZ).timestamp() * 1000)
@@ -183,6 +194,7 @@ def clean(text):
 
     return " ".join(text.split()).strip()
 
+
 CATEGORY_KEYWORDS = {
     "Music": [
         "מוזיקה", "מוסיקה", "הופעה", "הופעות", "קונצרט", "להקה", "זמר", "זמרת",
@@ -207,7 +219,7 @@ CATEGORY_KEYWORDS = {
         "אמנות", "אומנות", "יצירה", "ציור", "פיסול", "גלריה", "art"
     ],
     "Exhibition": [
-        "תערוכה", "תערוכות", "מוזיאון", "exhibition"
+        "סיור", "תערוכה", "תערוכות", "מוזיאון", "exhibition"
     ],
     "Culture": [
         "תרבות", "הרצאה", "ספרות", "שירה", "קהילה", "מורשת", "סיפור", "culture"
@@ -229,7 +241,7 @@ CATEGORY_KEYWORDS = {
     ],
     "Technology": [
         "טכנולוגיה", "הייטק", "חדשנות", "סטארטאפ", "סייבר", "בינה מלאכותית",
-        "technology", "tech", "ai"
+        "technology", "tech"
     ],
     "Business": [
         "עסקים", "יזמות", "עסקי", "שיווק", "קריירה", "השקעות", "business"
@@ -241,7 +253,7 @@ CATEGORY_KEYWORDS = {
         "כושר", "אימון", "יוגה", "פילאטיס", "זומבה", "fitness", "workout"
     ],
     "Outdoor": [
-        "פארק", "סיור", "הליכה", "טבע", "חוף", "ים", "מרחב ציבורי", "outdoor"
+        "פארק", "הליכה", "טבע", "חוף", "ים", "outdoor"
     ],
     "Family": [
         "ילדים", "ילד", "משפחה", "משפחות", "הורים", "פעילות לילדים", "לכל המשפחה",
@@ -291,6 +303,78 @@ def detect_categories(title, description, address, max_categories=3):
 
     return categories
 
+def classify_categories_with_agent(title, description, address, max_categories=3):
+    if not GROQ_API_KEY:
+        print("Groq API key is missing. Falling back to Municipality.")
+        return ["Municipality"]
+
+    client = Groq(api_key=GROQ_API_KEY)
+
+    prompt = f"""
+You are an event category classifier for a mobile app called EventSpot.
+
+Choose up to {max_categories} categories from this exact list only:
+{", ".join(ALLOWED_CATEGORIES)}
+
+Rules:
+- Return only a valid JSON array of strings.
+- Do not explain.
+- Do not return categories outside the list.
+- Use "Municipality" only if no specific category fits.
+- Prefer specific categories over "Municipality".
+- The event text may be in Hebrew or English.
+- Ignore website menus, footer text, navigation text, and unrelated city service text.
+- Classify only by the actual event title, description, and address.
+
+Event title:
+{title}
+
+Event description:
+{description}
+
+Event address:
+{address}
+"""
+
+    try:
+        response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You classify events into predefined categories and return only JSON."
+                },
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ],
+            temperature=0,
+            max_tokens=80
+        )
+
+        content = response.choices[0].message.content.strip()
+        categories = json.loads(content)
+
+        if not isinstance(categories, list):
+            return ["Municipality"]
+
+        clean_categories = []
+
+        for category in categories:
+            if category in ALLOWED_CATEGORIES and category not in clean_categories:
+                clean_categories.append(category)
+
+        clean_categories = clean_categories[:max_categories]
+
+        if not clean_categories:
+            return ["Municipality"]
+
+        return clean_categories
+
+    except Exception as e:
+        print("Groq category classification failed:", e)
+        return ["Municipality"]
 
 def shorten_description(description, max_chars=700):
     description = clean(description)
@@ -348,12 +432,12 @@ def first_from_srcset(srcset):
 
 def get_image_src(img):
     return (
-        img.get_attribute("src")
-        or img.get_attribute("data-src")
-        or img.get_attribute("data-original")
-        or img.get_attribute("data-lazy-src")
-        or first_from_srcset(img.get_attribute("srcset"))
-        or ""
+            img.get_attribute("src")
+            or img.get_attribute("data-src")
+            or img.get_attribute("data-original")
+            or img.get_attribute("data-lazy-src")
+            or first_from_srcset(img.get_attribute("srcset"))
+            or ""
     )
 
 
@@ -497,8 +581,8 @@ def scrape_event_detail(page, url):
     address = clean_address(where_text)
     lat, lng = geocode_address(address)
 
-    categories = detect_categories(title, description, address)
-
+    categories = classify_categories_with_agent(title, description, address)
+    
     current_time = get_current_time_millis()
 
     is_active = not (end_time_millis > 0 and end_time_millis < current_time)
