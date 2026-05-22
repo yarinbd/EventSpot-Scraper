@@ -3,3 +3,4 @@ requests
 firebase-admin
 python-dateutil
 flask
+groq
