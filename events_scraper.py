@@ -183,6 +183,114 @@ def clean(text):
 
     return " ".join(text.split()).strip()
 
+CATEGORY_KEYWORDS = {
+    "Music": [
+        "מוזיקה", "מוסיקה", "הופעה", "הופעות", "קונצרט", "להקה", "זמר", "זמרת",
+        "נגינה", "תזמורת", "ג'אז", "רוק", "פופ", "די ג׳יי", "דיג'יי", "dj"
+    ],
+    "Party": [
+        "מסיבה", "מסיבות", "ריקודים", "רחבת ריקודים", "party"
+    ],
+    "Nightlife": [
+        "לילה", "חיי לילה", "בר", "מועדון", "קלאב", "ליין", "nightlife"
+    ],
+    "Festival": [
+        "פסטיבל", "יריד", "חגיגה", "אירועי חוצות", "festival"
+    ],
+    "Food": [
+        "אוכל", "קולינריה", "טעימות", "מסעדה", "שף", "בישול", "מאכלים", "food"
+    ],
+    "Drinks": [
+        "יין", "בירה", "קוקטייל", "אלכוהול", "שתייה", "drinks", "wine", "beer"
+    ],
+    "Art": [
+        "אמנות", "אומנות", "יצירה", "ציור", "פיסול", "גלריה", "art"
+    ],
+    "Exhibition": [
+        "תערוכה", "תערוכות", "מוזיאון", "exhibition"
+    ],
+    "Culture": [
+        "תרבות", "הרצאה", "ספרות", "שירה", "קהילה", "מורשת", "סיפור", "culture"
+    ],
+    "Cinema": [
+        "סרט", "קולנוע", "הקרנה", "סינמטק", "movie", "film", "cinema"
+    ],
+    "Theater": [
+        "תיאטרון", "הצגה", "מחזה", "במה", "theater", "theatre"
+    ],
+    "Stand-up": [
+        "סטנדאפ", "סטנד-אפ", "קומדיה", "stand up", "stand-up"
+    ],
+    "Workshop": [
+        "סדנה", "כיתת אמן", "מפגש יצירה", "למידה", "תרגול", "workshop"
+    ],
+    "Networking": [
+        "נטוורקינג", "מפגש יזמים", "קהילת יזמים", "networking", "meetup"
+    ],
+    "Technology": [
+        "טכנולוגיה", "הייטק", "חדשנות", "סטארטאפ", "סייבר", "בינה מלאכותית",
+        "technology", "tech", "ai"
+    ],
+    "Business": [
+        "עסקים", "יזמות", "עסקי", "שיווק", "קריירה", "השקעות", "business"
+    ],
+    "Sports": [
+        "ספורט", "משחק", "טורניר", "כדורגל", "כדורסל", "ריצה", "מרוץ", "sports"
+    ],
+    "Fitness": [
+        "כושר", "אימון", "יוגה", "פילאטיס", "זומבה", "fitness", "workout"
+    ],
+    "Outdoor": [
+        "פארק", "סיור", "הליכה", "טבע", "חוף", "ים", "מרחב ציבורי", "outdoor"
+    ],
+    "Family": [
+        "ילדים", "ילד", "משפחה", "משפחות", "הורים", "פעילות לילדים", "לכל המשפחה",
+        "family", "kids"
+    ]
+}
+
+
+def detect_categories(title, description, address, max_categories=3):
+    title = clean(title)
+    description = clean(description)
+    address = clean(address)
+
+    text = f"{title} {description} {address}".lower()
+    title_lower = title.lower()
+
+    scores = {}
+
+    for category, keywords in CATEGORY_KEYWORDS.items():
+        score = 0
+
+        for keyword in keywords:
+            keyword_lower = keyword.lower()
+
+            if keyword_lower in text:
+                score += 1
+
+                if keyword_lower in title_lower:
+                    score += 2
+
+        if score > 0:
+            scores[category] = score
+
+    sorted_categories = sorted(
+        scores.items(),
+        key=lambda item: item[1],
+        reverse=True
+    )
+
+    categories = [
+        category
+        for category, score in sorted_categories[:max_categories]
+    ]
+
+    if not categories:
+        categories = ["Municipality"]
+
+    return categories
+
 
 def shorten_description(description, max_chars=700):
     description = clean(description)
@@ -389,6 +497,8 @@ def scrape_event_detail(page, url):
     address = clean_address(where_text)
     lat, lng = geocode_address(address)
 
+    categories = detect_categories(title, description, address)
+
     current_time = get_current_time_millis()
 
     is_active = not (end_time_millis > 0 and end_time_millis < current_time)
@@ -402,7 +512,7 @@ def scrape_event_detail(page, url):
         "dateTimeMillis": date_time_millis,
         "address": address,
         "description": description,
-        "categories": ["Municipality"],
+        "categories": categories,
         "lat": lat,
         "lng": lng,
         "source": "TEL_AVIV_MUNICIPALITY",
