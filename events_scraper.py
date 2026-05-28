@@ -38,7 +38,46 @@ def get_current_time_millis():
     return int(datetime.now(ISRAEL_TZ).timestamp() * 1000)
 
 
-def get_latest_event_urls(page, limit=40):
+def normalize_event_url(href):
+    if not href:
+        return ""
+
+    if href.startswith("/"):
+        return "https://www.tel-aviv.gov.il" + href
+
+    return href
+
+
+def get_event_card_text(link):
+    try:
+        return clean(link.evaluate("""
+            node => {
+                const datePattern = /\\d{1,2}\\.\\d{1,2}\\.\\d{2,4}/;
+                let current = node;
+
+                for (let depth = 0; current && depth < 8; depth++) {
+                    const text = (current.innerText || current.textContent || "")
+                        .replace(/\\s+/g, " ")
+                        .trim();
+
+                    if (datePattern.test(text)) {
+                        return text;
+                    }
+
+                    current = current.parentElement;
+                }
+
+                return (node.innerText || node.textContent || "")
+                    .replace(/\\s+/g, " ")
+                    .trim();
+            }
+        """))
+    except Exception as e:
+        print("Failed to read event card text:", e)
+        return ""
+
+
+def get_future_event_urls(page, limit=20, max_scrolls=12):
     page_loaded = False
 
     for attempt in range(3):
@@ -62,32 +101,77 @@ def get_latest_event_urls(page, limit=40):
         print("Could not open main events page after 3 attempts")
         return []
 
-    links = page.locator("a[href*='MainItemPage.aspx'][href*='ItemID=']")
-
-    urls = []
+    current_time = get_current_time_millis()
+    future_events = []
     seen_ids = set()
+    unchanged_scrolls = 0
 
-    for i in range(links.count()):
-        href = links.nth(i).get_attribute("href")
+    for scroll_index in range(max_scrolls + 1):
+        links = page.locator("a[href*='MainItemPage.aspx'][href*='ItemID=']")
+        previous_seen_count = len(seen_ids)
 
-        if not href:
-            continue
+        for i in range(links.count()):
+            link = links.nth(i)
+            href = normalize_event_url(link.get_attribute("href"))
 
-        if href.startswith("/"):
-            href = "https://www.tel-aviv.gov.il" + href
+            if not href:
+                continue
 
-        external_id = extract_item_id(href)
+            external_id = extract_item_id(href)
 
-        if not external_id or external_id in seen_ids:
-            continue
+            if not external_id or external_id in seen_ids:
+                continue
 
-        seen_ids.add(external_id)
-        urls.append(href)
+            seen_ids.add(external_id)
+            card_text = get_event_card_text(link)
 
-        if len(urls) == limit:
+            try:
+                start_time, end_time = parse_event_times(card_text)
+            except Exception as e:
+                print("Failed to parse event card date:", href, e)
+                continue
+
+            last_event_time = end_time or start_time
+
+            if not last_event_time:
+                print("Skipped event card without readable date:", href)
+                continue
+
+            if last_event_time < current_time:
+                print("Skipped past event from main page:", href)
+                continue
+
+            future_events.append({
+                "url": href,
+                "startTimeMillis": start_time,
+                "endTimeMillis": end_time
+            })
+
+            if len(future_events) >= limit:
+                break
+
+        if len(future_events) >= limit:
             break
 
-    return urls
+        if scroll_index == max_scrolls:
+            break
+
+        previous_height = page.evaluate("document.body.scrollHeight")
+        page.evaluate("window.scrollBy(0, Math.max(window.innerHeight * 0.9, 800))")
+        page.wait_for_timeout(1500)
+        current_height = page.evaluate("document.body.scrollHeight")
+
+        if len(seen_ids) == previous_seen_count and current_height == previous_height:
+            unchanged_scrolls += 1
+        else:
+            unchanged_scrolls = 0
+
+        if unchanged_scrolls >= 2:
+            print("No more event cards loaded while scrolling")
+            break
+
+    future_events.sort(key=lambda event: event["startTimeMillis"] or event["endTimeMillis"])
+    return [event["url"] for event in future_events[:limit]]
 
 
 def geocode_address(address):
@@ -563,19 +647,12 @@ def save_event_if_needed(event):
     return "no_changes"
 
 
-def add_new_events_until_existing(page, urls):
+def save_latest_events(page, urls):
     for url in urls:
         event = scrape_valid_event(page, url)
 
         if event is None:
             continue
-
-        doc_ref = db.collection("events").document(event["id"])
-        doc = doc_ref.get()
-
-        if doc.exists:
-            print("Reached existing event, stopping new events scan:", event["name"])
-            break
 
         save_event_if_needed(event)
 
@@ -640,7 +717,7 @@ def main():
         browser = p.chromium.launch(headless=True)
         page = browser.new_page()
 
-        latest_urls = get_latest_event_urls(page, limit=20)
+        latest_urls = get_future_event_urls(page, limit=20)
 
         print(f"Found {len(latest_urls)} candidate urls")
 
@@ -653,7 +730,7 @@ def main():
             return
 
         update_existing_tlv_events(page)
-        add_new_events_until_existing(page, latest_urls)
+        save_latest_events(page, latest_urls)
 
         browser.close()
 
