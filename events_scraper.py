@@ -126,7 +126,7 @@ def get_future_event_urls(page, limit=20, max_scrolls=12):
             card_text = get_event_card_text(link)
 
             try:
-                start_time, end_time = parse_event_times(card_text)
+                start_time, end_time, _ = parse_event_times(card_text)
             except Exception as e:
                 print("Failed to parse event card date:", href, e)
                 continue
@@ -226,7 +226,7 @@ def parse_event_times(when_text):
     text = clean(when_text).replace("מתי?", "").strip()
 
     if not text:
-        return 0, 0
+        return 0, 0, False
 
     # If the page has "המועדים הקרובים", we only use the part before it
     # for the main date range. This prevents nearby dates from breaking the range.
@@ -247,11 +247,11 @@ def parse_event_times(when_text):
         times = re.findall(r"\d{1,2}:\d{2}", text)
 
     if not dates:
-        return 0, 0
+        return 0, 0, False
 
     start_date = dates[0]
     end_date = dates[1] if len(dates) > 1 else dates[0]
-
+    has_time = bool(times)
     start_time = times[0] if len(times) > 0 else "00:00"
     end_time = times[1] if len(times) > 1 else "23:59"
 
@@ -263,7 +263,7 @@ def parse_event_times(when_text):
 
         return int(dt.timestamp() * 1000)
 
-    return to_millis(start_date, start_time), to_millis(end_date, end_time)
+    return to_millis(start_date, start_time), to_millis(end_date, end_time), has_time
 
 
 def clean_address(where_text):
@@ -584,7 +584,7 @@ def scrape_event_detail(page, url):
     image_url = get_event_image_url(page)
 
     external_id = extract_item_id(url)
-    date_time_millis, end_time_millis = parse_event_times(when_text)
+    date_time_millis, end_time_millis, has_time = parse_event_times(when_text)
 
     address = clean_address(where_text)
     lat, lng = geocode_address(address)
@@ -613,6 +613,7 @@ def scrape_event_detail(page, url):
         "externalId": external_id,
         "sourceUrl": url,
         "endTimeMillis": end_time_millis,
+        "hasTime": has_time,
         "isActive": is_active,
         "updatedAt": current_time
     }
