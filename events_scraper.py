@@ -280,67 +280,106 @@ def clean(text):
     return " ".join(text.split()).strip()
 
 
+def classify_categories_locally(title, description, address, max_categories=3):
+    text = clean(f"{title} {description} {address}").lower()
+
+    keyword_rules = [
+        ("Family", [
+            "ילדים", "ילדות", "משפחה", "משפחות", "הורים", "פעוטות",
+            "שעת סיפור", "משחק", "kids", "children", "family"
+        ]),
+        ("Fitness", [
+            "יוגה", "פילאטיס", "אימון", "כושר", "ספורט", "ריצה",
+            "הליכה", "מחול", "ריקוד", "fitness", "workout", "yoga"
+        ]),
+        ("Sports", [
+            "כדורגל", "כדורסל", "טורניר", "מרוץ", "מרתון",
+            "sports", "football", "basketball", "run"
+        ]),
+        ("Music", [
+            "מוזיקה", "מוסיקה", "הופעה", "קונצרט", "זמר", "זמרת",
+            "להקה", "נגינה", "ג'אז", "dj", "music", "concert"
+        ]),
+        ("Party", [
+            "מסיבה", "רייב", "ריקודים", "party"
+        ]),
+        ("Nightlife", [
+            "לילה", "בר", "מועדון", "nightlife", "club"
+        ]),
+        ("Festival", [
+            "פסטיבל", "יריד", "festival"
+        ]),
+        ("Food", [
+            "אוכל", "בישול", "קולינר", "טעימות", "מסעד", "שף",
+            "food", "cooking", "culinary"
+        ]),
+        ("Drinks", [
+            "יין", "בירה", "קוקטייל", "אלכוהול", "drinks", "wine", "beer"
+        ]),
+        ("Art", [
+            "אמנות", "אומנות", "ציור", "יצירה", "גלריה", "artist", "art"
+        ]),
+        ("Exhibition", [
+            "תערוכה", "exhibition"
+        ]),
+        ("Cinema", [
+            "סרט", "קולנוע", "הקרנה", "cinema", "movie", "film"
+        ]),
+        ("Theater", [
+            "תיאטרון", "תאטרון", "הצגה", "מחזה", "theater", "theatre", "play"
+        ]),
+        ("Stand-up", [
+            "סטנדאפ", "סטנד אפ", "standup", "stand-up"
+        ]),
+        ("Workshop", [
+            "סדנה", "כיתת אמן", "תרגול", "workshop"
+        ]),
+        ("Culture", [
+            "תרבות", "הרצאה", "מפגש", "שיחה", "סיור", "מורשת",
+            "ספרות", "culture", "lecture", "tour"
+        ]),
+        ("Technology", [
+            "טכנולוג", "הייטק", "סטארט", "סייבר", "בינה מלאכותית",
+            "ai", "technology", "startup", "cyber"
+        ]),
+        ("Business", [
+            "עסקים", "יזמות", "קריירה", "שיווק", "business", "entrepreneur"
+        ]),
+        ("Networking", [
+            "נטוורקינג", "networking"
+        ]),
+        ("Outdoor", [
+            "פארק", "גן", "חוף", "כיכר", "רחוב", "נמל", "outdoor", "park", "beach"
+        ])
+    ]
+
+    categories = []
+
+    for category, keywords in keyword_rules:
+        if any(keyword in text for keyword in keywords):
+            categories.append(category)
+
+            if len(categories) == max_categories:
+                break
+
+    return categories or ["Municipality"]
+
+
 def classify_categories_with_agent(title, description, address, max_categories=3):
     if not GROQ_API_KEY:
-        print("Groq API key is missing. Falling back to Municipality.")
-        return ["Municipality"]
+        print("Groq API key is missing. Falling back to local category classification.")
+        return classify_categories_locally(title, description, address, max_categories)
 
     client = Groq(api_key=GROQ_API_KEY)
 
     prompt = f"""
-    You are an accurate event category classifier for a mobile app called EventSpot.
+    Choose 1-{max_categories} categories for this event.
+    Return only a JSON array. Allowed: {", ".join(ALLOWED_CATEGORIES)}.
+    Use Municipality only when no specific category fits. Do not mix Municipality with other categories.
 
-    Your task is to choose the most relevant categories for the actual event activity.
-
-    Allowed categories only:
-    {", ".join(ALLOWED_CATEGORIES)}
-
-    Strict output rules:
-    - Return only a valid JSON array of strings.
-    - Do not add explanations, notes, markdown, or extra text.
-    - Choose between 1 and {max_categories} categories.
-    - Use only categories from the allowed list.
-    - Do not invent new categories.
-    - Do not return duplicate categories.
-    - Use "Municipality" only if no specific category fits.
-
-    Classification rules:
-    - Base your decision on the full event context: title, description, and address together.
-    - Give the description the highest weight, because it usually explains what actually happens in the event.
-    - Use the title only as supporting context, not as the only source.
-    - Use the address only as supporting context, mainly to identify outdoor locations or venue type.
-    - Classify by what participants will actually do at the event.
-    - Do not classify by a person's name, venue name, building name, neighborhood name, street name, or place name alone.
-    - If a venue or place is named after a singer, artist, public figure, businessperson, or cultural figure, ignore that person's profession unless the description clearly confirms it is relevant to the event.
-    - Do not classify as Music only because the title or venue contains the name of a musician or singer.
-    - Do not classify as Art, Culture, Theater, or Cinema only because the venue name sounds cultural.
-    - Ignore website menus, footer text, navigation text, unrelated city services, accessibility text, and general municipality text.
-    - Prefer specific activity-based categories over broad categories.
-    - Do not use "Municipality" together with other categories.
-    - If the event is for children, parents, families, games, playroom, story time, or family activity, prefer Family.
-    - If the event includes yoga, training, workout, dance class, movement, fitness activity, or physical exercise, prefer Fitness and optionally Sports.
-    - If the event takes place at a beach, park, port, garden, square, street, or open public space, use Outdoor only when the activity is actually outdoors.
-    - If the event is a movie screening or film activity, use Cinema.
-    - If the event is a play, performance on stage, acting, or theatre activity, use Theater.
-    - If the event is a lecture, community meeting, cultural talk, heritage activity, or general enrichment activity, use Culture.
-    - If the event is a workshop, guided practice, hands-on learning, or creative session, use Workshop.
-    - If the event is a party, club event, DJ event, dancing party, or nightlife event, use Party and/or Nightlife only when the description clearly supports it.
-    - If the event is about food, cooking, tastings, restaurants, or culinary activity, use Food.
-    - If the event is about alcohol, wine, beer, cocktails, or drinking activity, use Drinks.
-    - If the event is about technology, startups, software, AI, innovation, cyber, or high-tech, use Technology only when the actual event topic is technology.
-    - If the event is about entrepreneurship, business, marketing, career, or professional activity, use Business and optionally Networking.
-    - If there is not enough reliable information to choose a specific category, return ["Municipality"].
-
-    Now classify this event.
-
-    Event title:
-    {title}
-
-    Event description:
-    {description}
-
-    Event address:
-    {address}
+    Title: {clean(title)[:180]}
+    Description: {clean(description)[:500]}
+    Address: {clean(address)[:160]}
     """
 
     try:
@@ -364,7 +403,7 @@ def classify_categories_with_agent(title, description, address, max_categories=3
         categories = json.loads(content)
 
         if not isinstance(categories, list):
-            return ["Municipality"]
+            return classify_categories_locally(title, description, address, max_categories)
 
         clean_categories = []
 
@@ -375,13 +414,13 @@ def classify_categories_with_agent(title, description, address, max_categories=3
         clean_categories = clean_categories[:max_categories]
 
         if not clean_categories:
-            return ["Municipality"]
+            return classify_categories_locally(title, description, address, max_categories)
 
         return clean_categories
 
     except Exception as e:
         print("Groq category classification failed:", e)
-        return ["Municipality"]
+        return classify_categories_locally(title, description, address, max_categories)
 
 
 def shorten_description(description, max_chars=700):
